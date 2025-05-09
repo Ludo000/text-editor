@@ -30,10 +30,12 @@ fn build_ui(app: &Application) {
         .show_title_buttons(true)
         .build();
 
+    let new_button = Button::with_label("New");
     let open_button = Button::with_label("Open");
     let save_as_button = Button::with_label("Save As");
     let save_button = Button::with_label("Save");
 
+    header.pack_start(&new_button);
     header.pack_start(&open_button);
     header.pack_end(&save_as_button);
     header.pack_end(&save_button);
@@ -51,6 +53,12 @@ fn build_ui(app: &Application) {
         .build();
 
     window.set_child(Some(&scrolled_window));
+
+    // New button logic
+    new_button.connect_clicked(clone!(@strong text_buffer, @strong file_path => move |_| {
+        text_buffer.set_text("");
+        *file_path.borrow_mut() = None;
+    }));
 
     // Open button logic
     open_button.connect_clicked(clone!(@strong window, @strong text_buffer, @strong file_path => move |_| {
