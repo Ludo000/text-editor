@@ -1,13 +1,16 @@
 use gtk4::prelude::*;
 use gtk4::{
     Application, ApplicationWindow, Button, FileChooserAction, FileChooserDialog,
-    HeaderBar, ResponseType, ScrolledWindow, TextView,
+    HeaderBar, ResponseType, ScrolledWindow, TextView, Box as GtkBox, Orientation,
 };
-use gtk4::glib::{clone};
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::Write;
 use std::rc::Rc;
+use std::env;
+use gtk4::gio::Cancellable;
+use vte4::Terminal as VteTerminal;
+use vte4::TerminalExtManual;
 
 fn main() {
     let app = Application::builder()
@@ -52,54 +55,134 @@ fn build_ui(app: &Application) {
         .hexpand(true)
         .build();
 
-    window.set_child(Some(&scrolled_window));
-
-    // New button logic
-    new_button.connect_clicked(clone!(@strong text_buffer, @strong file_path => move |_| {
-        text_buffer.set_text("");
-        *file_path.borrow_mut() = None;
-    }));
-
-    // Open button logic
-    open_button.connect_clicked(clone!(@strong window, @strong text_buffer, @strong file_path => move |_| {
-        let dialog = FileChooserDialog::new(
-            Some("Open File"),
-            Some(&window),
-            FileChooserAction::Open,
-            &[("Open", ResponseType::Accept), ("Cancel", ResponseType::Cancel)],
-        );
-
-        dialog.connect_response(clone!(@strong text_buffer, @strong file_path => move |dialog, response| {
-            if response == ResponseType::Accept {
-                if let Some(file) = dialog.file().and_then(|f| f.path()) {
-                    if let Ok(content) = std::fs::read_to_string(&file) {
-                        text_buffer.set_text(&content);
-                        *file_path.borrow_mut() = Some(file);
-                    }
+    // Terminal
+    let terminal = VteTerminal::new();
+    if let Some(shell) = env::var("SHELL").ok() {
+        terminal.spawn_async(
+            vte4::PtyFlags::DEFAULT,
+            None,
+            &[&shell],
+            &[],                 // empty env
+            glib::SpawnFlags::DEFAULT,
+            || {},               // empty child_setup closure
+            -1,
+            None::<&Cancellable>,
+            move |res| {
+                if let Err(err) = res {
+                    eprintln!("Failed to spawn shell: {}", err);
                 }
-            }
-            dialog.close();
-        }));
+            },
+        );
+    }
 
-        dialog.show();
-    }));
+    let terminal_box = ScrolledWindow::builder()
+        .child(&terminal)
+        .vexpand(false)
+        .hexpand(true)
+        .min_content_height(150)
+        .build();
 
-    // Save button logic
-    save_button.connect_clicked(clone!(@strong window, @strong text_buffer, @strong file_path => move |_| {
-        if let Some(ref path) = *file_path.borrow() {
-            if let Ok(mut file) = File::create(path) {
-                let text = text_buffer.text(&text_buffer.start_iter(), &text_buffer.end_iter(), false);
-                let _ = file.write_all(text.as_bytes());
-            }
-        } else {
+    let vbox = GtkBox::new(Orientation::Vertical, 5);
+    vbox.append(&scrolled_window);
+    vbox.append(&terminal_box);
+    window.set_child(Some(&vbox));
+
+    // New
+    {
+        let text_buffer = text_buffer.clone();
+        let file_path = file_path.clone();
+        new_button.connect_clicked(move |_| {
+            text_buffer.set_text("");
+            *file_path.borrow_mut() = None;
+        });
+    }
+
+    // Open
+    {
+        let text_buffer = text_buffer.clone();
+        let file_path = file_path.clone();
+        let window = window.clone();
+        open_button.connect_clicked(move |_| {
             let dialog = FileChooserDialog::new(
-                Some("Save File"),
+                Some("Open File"),
                 Some(&window),
-                FileChooserAction::Save,
-                &[("Save", ResponseType::Accept), ("Cancel", ResponseType::Cancel)],
+                FileChooserAction::Open,
+                &[("Open", ResponseType::Accept), ("Cancel", ResponseType::Cancel)],
             );
 
-            dialog.connect_response(clone!(@strong text_buffer, @strong file_path => move |dialog, response| {
+            let text_buffer = text_buffer.clone();
+            let file_path = file_path.clone();
+            dialog.connect_response(move |dialog, response| {
+                if response == ResponseType::Accept {
+                    if let Some(file) = dialog.file().and_then(|f| f.path()) {
+                        if let Ok(content) = std::fs::read_to_string(&file) {
+                            text_buffer.set_text(&content);
+                            *file_path.borrow_mut() = Some(file);
+                        }
+                    }
+                }
+                dialog.close();
+            });
+
+            dialog.show();
+        });
+    }
+
+    // Save
+    {
+        let text_buffer = text_buffer.clone();
+        let file_path = file_path.clone();
+        let window = window.clone();
+        save_button.connect_clicked(move |_| {
+            if let Some(ref path) = *file_path.borrow() {
+                if let Ok(mut file) = File::create(path) {
+                    let text = text_buffer.text(&text_buffer.start_iter(), &text_buffer.end_iter(), false);
+                    let _ = file.write_all(text.as_bytes());
+                }
+            } else {
+                let dialog = FileChooserDialog::new(
+                    Some("Save File"),
+                    Some(&window),
+                    FileChooserAction::Save,
+                    &[("Save", ResponseType::Accept), ("Cancel", ResponseType::Cancel)],
+                );
+
+                let text_buffer = text_buffer.clone();
+                let file_path = file_path.clone();
+                dialog.connect_response(move |dialog, response| {
+                    if response == ResponseType::Accept {
+                        if let Some(file) = dialog.file().and_then(|f| f.path()) {
+                            if let Ok(mut f) = File::create(&file) {
+                                let text = text_buffer.text(&text_buffer.start_iter(), &text_buffer.end_iter(), false);
+                                let _ = f.write_all(text.as_bytes());
+                                *file_path.borrow_mut() = Some(file);
+                            }
+                        }
+                    }
+                    dialog.close();
+                });
+
+                dialog.show();
+            }
+        });
+    }
+
+    // Save As
+    {
+        let text_buffer = text_buffer.clone();
+        let file_path = file_path.clone();
+        let window = window.clone();
+        save_as_button.connect_clicked(move |_| {
+            let dialog = FileChooserDialog::new(
+                Some("Save File As"),
+                Some(&window),
+                FileChooserAction::Save,
+                &[("Save As", ResponseType::Accept), ("Cancel", ResponseType::Cancel)],
+            );
+
+            let text_buffer = text_buffer.clone();
+            let file_path = file_path.clone();
+            dialog.connect_response(move |dialog, response| {
                 if response == ResponseType::Accept {
                     if let Some(file) = dialog.file().and_then(|f| f.path()) {
                         if let Ok(mut f) = File::create(&file) {
@@ -110,36 +193,11 @@ fn build_ui(app: &Application) {
                     }
                 }
                 dialog.close();
-            }));
+            });
 
             dialog.show();
-        }
-    }));
-
-    // Save As button logic
-    save_as_button.connect_clicked(clone!(@strong window, @strong text_buffer, @strong file_path => move |_| {
-        let dialog = FileChooserDialog::new(
-            Some("Save File As"),
-            Some(&window),
-            FileChooserAction::Save,
-            &[("Save As", ResponseType::Accept), ("Cancel", ResponseType::Cancel)],
-        );
-
-        dialog.connect_response(clone!(@strong text_buffer, @strong file_path => move |dialog, response| {
-            if response == ResponseType::Accept {
-                if let Some(file) = dialog.file().and_then(|f| f.path()) {
-                    if let Ok(mut f) = File::create(&file) {
-                        let text = text_buffer.text(&text_buffer.start_iter(), &text_buffer.end_iter(), false);
-                        let _ = f.write_all(text.as_bytes());
-                        *file_path.borrow_mut() = Some(file);
-                    }
-                }
-            }
-            dialog.close();
-        }));
-
-        dialog.show();
-    }));
+        });
+    }
 
     window.show();
 }
